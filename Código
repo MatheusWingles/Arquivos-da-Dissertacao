@@ -1,0 +1,284 @@
+Final
+
+
+library("sp")
+library("sf")
+library("rgdal")
+library("openxlsx")
+library ("dplyr")
+library("readxl")
+library("rlang")
+library("ggplot2")
+library("rgdal")
+library("GGally")
+library("df")
+library("dplyr")
+library (GGally)
+library("CARBayesST")
+library("coda")
+
+
+Mudando Diretório
+
+setwd("Diretório/desejado/para/os/arquivos")
+
+
+
+#### Importação#######
+dados <- read_xlsx("endereco/desejado/para/os/arquivos/dadoscomcovid.xlsx") # tabela
+correlacao <-read_xlsx("endereco/desejado/para/os/arquivos/dadoscomcovid.xlsx")
+acumulado <- read_xlsx("endereco/desejado/para/os/arquivos/acumuladoocr.xlsx")
+
+
+#####Estudo de correlacao ####
+##Quadro Geral de Correlacao###
+ggpairs(correlacao, columns = c(5, 6:13)) 
+#####Correlacao entre duas para verificacao do p-valor#####
+
+cor.test(correlacao$logocr, correlacao$Iluminação)
+cor.test(correlacao$logocr, correlacao$Equipamentos)
+cor.test(correlacao$logocr, correlacao$Renda)
+cor.test(correlacao$logocr, correlacao$Analfabetismo)
+cor.test(correlacao$logocr, correlacao$Densidade)
+cor.test(correlacao$logocr, correlacao$Pavimentação)
+cor.test(correlacao$logocr, correlacao$Empreendimentos)
+cor.test(correlacao$logocr, correlacao$`Renda x Analfabetismo`)
+
+
+
+
+### Carregando shape ####
+
+natal_rgdal<-readOGR(dsn="endereco/desejado/para/os/arquivos//Limite de Bairros", 
+                     layer="Limite de Bairros", 
+                     verbose=FALSE, 
+                     stringsAsFactors=FALSE);
+
+natal <- st_read(file.choose("endereco/desejado/para/os/arquivos/Limite de Bairros.shp"))
+
+
+#### transformando o shape em um formato para criar o mapa###
+natal_rgdal <- spTransform(natal_rgdal, CRS("+proj=longlat +datum=WGS84 +no_defs"))
+
+library(leaflet)
+colours <- colorNumeric(palette = "Reds", domain = acumulado$acumulado, na.color = "#808080")
+mapa <- leaflet(data=natal_rgdal) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~colours(acumulado$acumulado), weight=1.5, color="", fillOpacity = 1.0, highlightOptions = highlightOptions(color = "black",
+                                                                                                                                    weight = 2,
+                                                                                                                                    bringToFront = TRUE)) %>%
+  addLegend(pal = colours, values = acumulado$acumulado, opacity = 1, title=" Nº de Ocorrências") %>%
+  addScaleBar(position="bottomleft")
+
+mapa
+
+
+
+
+
+
+
+
+####Matriz W = Gerando a matriz de vizinhaça ######
+
+library("spdep")
+
+W.nb <- poly2nb(natal, row.names = dados$N_)
+
+#Corrigindo Falha no shapefile no Bairro de Salinas: Adicionando suas vizinhacas.
+
+W.nb[[33]] <- c(as.integer(3), as.integer(5), as.integer(6))
+W.nb[[3]] <- c(as.integer(4), as.integer(6), as.integer(14), as.integer(18), as.integer(33))
+W.nb[[5]] <- c(as.integer(9), as.integer(11), as.integer(13), as.integer(33))
+W.nb[[6]] <- c(as.integer(3), as.integer(4),  as.integer(9), as.integer(18), as.integer(28), as.integer(29), as.integer(33))
+
+### Alterando o Formato do arquivo da matriz de vizinhanca ###
+
+W.list <- nb2listw(W.nb,style="B")
+
+W <- nb2mat(W.nb, style = "B", zero.policy=TRUE)
+
+
+###### Formula ######
+
+formula <- ocr ~ ilumpub+equipub+rendnominal+analf+dens+paviment+empreendimentos+covid+rendanalf+z1+z2+z3+g1+g2
+
+#ilumpub = gasto com iluminacao publica.
+#equipub = quantidade de equipamentos publicos.
+#rendnominal = renda nominal media.
+#analf = taxa de analfabetismo.
+#dens = densidade demografica.
+#paviment = percentual de pavimentacao.
+#empreendimentos = quantidade de empreendimento.
+#covid = variavel dummy para o ano de lockdown.
+#rendanalf = produto de rendnominal por analf.
+#z1 = dummy da zona leste.
+#z2 = dummy da zona oeste.
+#z3 = dumy da zona sul.
+#g1 = dummy de Robinson.
+#g2 = dummy de Fatima.
+
+
+#########Simulando cadeias com CarbayesST #####
+
+chain1 <-ST.CARclustrends(formula = formula, family = "poisson", data = dados, W = W, burnin = 500000, n.sample = 1000000,  trends=c("MI"))
+
+chain2 <-ST.CARadaptive(formula = formula, family = "poisson", data = dados, W = W, burnin = 500000, n.sample = 1000000, thin = 500)
+
+chain3 <-ST.CARanova(formula = formula, family = "poisson", data = dados, W = W, burnin = 500000, n.sample = 1000000, thin = 500)
+
+chain4 <-ST.CARar(formula = formula, family = "poisson", data = dados, W = W, burnin = 500000, n.sample = 1000000, thin = 500, AR=1)
+
+chain41 <-ST.CARar(formula = formula, family = "poisson", data = dados, W = W, burnin = 500000, n.sample = 1000000, thin = 500, AR=2)
+
+chain5 <-ST.CARlinear(formula = formula, family = "poisson", data = dados, W = W, burnin = 500000, n.sample = 1000000, thin = 500)
+
+chain6 <-ST.CARlocalised(formula = formula, family = "poisson", data = dados,3,W = W, burnin = 500000, n.sample = 1000000, thin = 500)
+
+chain7 <-ST.CARsepspatial(formula = formula, family = "poisson", data = dados, W = W, burnin = 500000, n.sample = 1000000, thin = 500)
+
+############### Apos Analisar DIC, WAIC e LMPL para escolher o melhor - Melhor foi CAR Adaptado #############
+chainadap1 <-ST.CARadaptive(formula = formula, family = "poisson", data = dados, W = W, burnin = 100000, n.sample = 2200000, thin = 1000)
+chainadap2 <-ST.CARadaptive(formula = formula, family = "poisson", data = dados, W = W, burnin = 100000, n.sample = 2200000, thin = 1000)
+chainadap3 <-ST.CARadaptive(formula = formula, family = "poisson", data = dados, W = W, burnin = 100000, n.sample = 2200000, thin = 1000)
+
+
+################ Analisando Criterio de Gelman #############
+beta.sampleschainadap <- mcmc.list(chainadap1$samples$beta, chainadap2$samples$beta, chainadap3$samples$beta)
+
+gelman.diag(beta.sampleschainadap)
+
+########### Plotando o grafico da convergencia das cadeias do Car Adaptado#######
+plot(beta.sampleschainadap)
+
+################ Analisando os Quantis #############
+
+beta.sampleschainadap <- rbind(chainadap1$samples$beta[ ,-1], chainadap2$samples$beta[ ,-1], chainadap3$samples$beta[ ,-1])
+t(round(apply(exp(beta.sampleschainadap), 2, quantile, c(0.5, 0.025, 0.975)), 8))
+
+
+####################### Gerando mapas dos Valores FITTADOS pelo modelo CAR Adaptado ###############################
+#### Importacao dos valores fittados por ano
+fitted2011 <-read_xlsx("endereco/desejado/para/os/arquivos/fitted2011.xlsx")
+fitted2012 <-read_xlsx("endereco/desejado/para/os/arquivos/fitted2012.xlsx")
+fitted2013 <-read_xlsx("endereco/desejado/para/os/arquivos/fitted2013.xlsx")
+fitted2014 <-read_xlsx("endereco/desejado/para/os/arquivos/fitted2014.xlsx")
+fitted2015 <-read_xlsx("endereco/desejado/para/os/arquivos/fitted2015.xlsx")
+fitted2016 <-read_xlsx("endereco/desejado/para/os/arquivos/fitted2016.xlsx")
+fitted2017 <-read_xlsx("endereco/desejado/para/os/arquivos/fitted2017.xlsx")
+fitted2018 <-read_xlsx("endereco/desejado/para/os/arquivos/fitted2018.xlsx")
+fitted2019 <-read_xlsx("endereco/desejado/para/os/arquivos/fitted2019.xlsx")
+fitted2020 <-read_xlsx("endereco/desejado/para/os/arquivos/fitted2020.xlsx")
+fitted2021 <-read_xlsx("endereco/desejado/para/os/arquivos/fitted2021.xlsx")
+
+####### Escala para coloracao do mapa = Ela foi construida a partir dos valor minimo e maximos dos valores fittados, os 35 valores entre eles foram interpolados #########
+fittedadaptive1 <-read_xlsx("endereco/desejado/para/os/arquivos/fittedadaptive1.xlsx")
+
+
+###### Mapas apos as cadeias chainadap1 ###############
+colours <- colorNumeric(palette = "Reds", domain = fittedadaptive1$fitted, na.color = "#808080")
+map2011 <- leaflet(data=natal_rgdal) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~colours(fitted2011$fitted), weight=1.5, color="", fillOpacity = 1.0, highlightOptions = highlightOptions(color = "black",
+                                                                                                                                    weight = 2,
+                                                                                                                                    bringToFront = TRUE)) %>%
+  addLegend(pal = colours, values = fittedadaptive1$fitted, opacity = 1, title="Valores Ajustados") %>%
+  addScaleBar(position="bottomleft")
+
+
+
+map2012 <- leaflet(data=natal_rgdal) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~colours(fitted2012$fitted), weight=1.5, color="", fillOpacity = 1.0, highlightOptions = highlightOptions(color = "black",
+                                                                                                                                    weight = 2,
+                                                                                                                                    bringToFront = TRUE)) %>%
+  addLegend(pal = colours, values = fittedadaptive1$fitted, opacity = 1, title="Valores Ajustados") %>%
+  addScaleBar(position="bottomleft")
+
+
+map2013 <- leaflet(data=natal_rgdal) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~colours(fitted2013$fitted), weight=1.5, color="", fillOpacity = 1.0, highlightOptions = highlightOptions(color = "black",
+                                                                                                                                    weight = 2,
+                                                                                                                                    bringToFront = TRUE)) %>%
+  addLegend(pal = colours, values = fittedadaptive1$fitted, opacity = 1, title="Valores Ajustados") %>%
+  addScaleBar(position="bottomleft")
+
+
+map2014 <- leaflet(data=natal_rgdal) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~colours(fitted2014$fitted), weight=1.5, color="", fillOpacity = 1.0, highlightOptions = highlightOptions(color = "black",
+                                                                                                                                    weight = 2,
+                                                                                                                                    bringToFront = TRUE)) %>%
+  addLegend(pal = colours, values = fittedadaptive1$fitted, opacity = 1, title="Valores Ajustados") %>%
+  addScaleBar(position="bottomleft")
+
+
+map2015 <- leaflet(data=natal_rgdal) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~colours(fitted2015$fitted), weight=1.5, color="", fillOpacity = 1.0, highlightOptions = highlightOptions(color = "black",
+                                                                                                                                    weight = 2,
+                                                                                                                                    bringToFront = TRUE)) %>%
+  addLegend(pal = colours, values = fittedadaptive1$fitted, opacity = 1, title="Valores Ajustados") %>%
+  addScaleBar(position="bottomleft")
+
+
+map2016 <- leaflet(data=natal_rgdal) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~colours(fitted2016$fitted), weight=1.5, color="", fillOpacity = 1.0, highlightOptions = highlightOptions(color = "black",
+                                                                                                                                    weight = 2,
+                                                                                                                                    bringToFront = TRUE)) %>%
+  addLegend(pal = colours, values = fittedadaptive1$fitted, opacity = 1, title="Valores Ajustados") %>%
+  addScaleBar(position="bottomleft")
+
+
+map2017 <- leaflet(data=natal_rgdal) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~colours(fitted2017$fitted), weight=1.5, color="", fillOpacity = 1.0, highlightOptions = highlightOptions(color = "black",
+                                                                                                                                    weight = 2,
+                                                                                                                                    bringToFront = TRUE)) %>%
+  addLegend(pal = colours, values = fittedadaptive1$fitted, opacity = 1, title="Valores Ajustados") %>%
+  addScaleBar(position="bottomleft")
+
+
+
+map2018 <- leaflet(data=natal_rgdal) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~colours(fitted2018$fitted), weight=1.5, color="", fillOpacity = 1.0, highlightOptions = highlightOptions(color = "black",
+                                                                                                                                    weight = 2,
+                                                                                                                                    bringToFront = TRUE)) %>%
+  addLegend(pal = colours, values = fittedadaptive1$fitted, opacity = 1, title="Valores Ajustados") %>%
+  addScaleBar(position="bottomleft")
+
+
+
+map2019 <- leaflet(data=natal_rgdal) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~colours(fitted2019$fitted), weight=1.5, color="", fillOpacity = 1.0, highlightOptions = highlightOptions(color = "black",
+                                                                                                                                    weight = 2,
+                                                                                                                                    bringToFront = TRUE)) %>%
+  addLegend(pal = colours, values = fittedadaptive1$fitted, opacity = 1, title="Valores Ajustados") %>%
+  addScaleBar(position="bottomleft")
+
+
+
+map2020 <- leaflet(data=natal_rgdal) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~colours(fitted2020$fitted), weight=1.5, color="", fillOpacity = 1.0, highlightOptions = highlightOptions(color = "black",
+                                                                                                                                 weight = 2,
+                                                                                                                                 bringToFront = TRUE)) %>%
+  
+  addLegend(pal = colours, values = fittedadaptive1$fitted, opacity = 1, title="Valores Ajustados") %>%
+  addScaleBar(position="bottomleft")
+
+
+map2021 <- leaflet(data=natal_rgdal) %>%
+  addTiles() %>%
+  addPolygons(fillColor = ~colours(fitted2021$fitted), weight=1.5, color="", fillOpacity = 1.0, highlightOptions = highlightOptions(color = "black",
+                                                                                                                                    weight = 2,
+                                                                                                                                    bringToFront = TRUE)) %>%
+  addLegend(pal = colours, values = fittedadaptive1$fitted, opacity = 1, title="Valores Ajustados") %>%
+  addScaleBar(position="bottomleft")
+
+
+############## Os mapas de ocorrencias por ano foram feitos semelhantementes aos do residuos, só trocar os valores pelos de ocorrencias por ano ##########
